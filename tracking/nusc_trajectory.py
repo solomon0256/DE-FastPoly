@@ -7,6 +7,7 @@ In general, Poly-MOT combines count-based and confidence-based strategy to manag
 Specifically, we use the count-based strategy to initialize and unregister trajectories, while using the 
 score-based strategy to penalize mismatched trajectories
 """
+
 import pdb
 import numpy as np
 from .nusc_life_manage import LifeManagement
@@ -33,6 +34,18 @@ class Trajectory:
         # decouple size and z-position (constant) from motion management, reduce computational overhead
         if self.cfg['geometry_model']['use'][self.class_label]:
             self.geometry_management = GeometryManagement(timestamp, det_infos, self.motion_management[timestamp], self.cfg['geometry_model'])
+
+        # DE-FastPoly: store last measured radial velocity for association
+        self.last_vr = det_infos.get('radial_vel', 0.0) if det_infos.get('has_valid_vr', False) else None
+        # DE-FastPoly: RCS state (valid only when there are in-box radar points)
+        init_rcs = det_infos.get('radar_rcs', None)
+        init_npts = int(det_infos.get('vr_n_pts', 0)) if det_infos.get('vr_n_pts', None) is not None else 0
+        if init_rcs is not None and np.isfinite(float(init_rcs)) and init_npts > 0:
+            self.last_rcs = float(init_rcs)
+            self.last_rcs_npts = init_npts
+        else:
+            self.last_rcs = None
+            self.last_rcs_npts = 0
             
     
     def state_predict(self, timestamp: int) -> None:
@@ -64,6 +77,15 @@ class Trajectory:
             self.geometry_management.update(timestamp, self.motion_management[timestamp], det)
         self.score_management.update(timestamp, self.motion_management[timestamp], det)
         self.life_management.update(timestamp, self.score_management, det)
+        # DE-FastPoly: update last measured v_r if valid
+        if det is not None and det.get('has_valid_vr', False):
+            self.last_vr = det.get('radial_vel', 0.0)
+        if det is not None and ('radar_rcs' in det):
+            rcs = det.get('radar_rcs', None)
+            npts = int(det.get('vr_n_pts', 0)) if det.get('vr_n_pts', None) is not None else 0
+            if rcs is not None and np.isfinite(float(rcs)) and npts > 0:
+                self.last_rcs = float(rcs)
+                self.last_rcs_npts = npts
         
     def __getitem__(self, item) -> FrameObject:
         return self.motion_management[item]

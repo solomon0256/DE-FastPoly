@@ -44,6 +44,44 @@ class Tracker:
         self.use_voxel_mask = config['association']['voxel_mask']
         self.voxel_mask_size = config['association']['voxel_mask_size']
 
+        # DE-FastPoly: Doppler-aware association (Contribution D) and gating (Contribution E)
+        doppler_cfg = config.get('doppler', {})
+        self.doppler_cfg = doppler_cfg
+        self.use_doppler_assoc = doppler_cfg.get('use_doppler_assoc', False)
+        self.use_doppler_gate = doppler_cfg.get('use_doppler_gate', False)
+        self.assoc_alpha = doppler_cfg.get('assoc_alpha', 0.7)
+        self.assoc_beta = doppler_cfg.get('assoc_beta', 0.3)
+        self.doppler_sigma = doppler_cfg.get('doppler_sigma', 1.0)
+        self.doppler_gate_thre = doppler_cfg.get('doppler_gate_thre', 3.0)
+        # Class-specific v_r magnitude threshold: only trust v_r above this
+        self.vr_class_thre = doppler_cfg.get('vr_class_thre', {0: 1.0, 1: 0.3, 2: 0.5})
+        # Doppler-aided adaptive threshold (Contribution F): discount factor for velocity-consistent pairs
+        self.use_doppler_discount = doppler_cfg.get('use_doppler_discount', False)
+        self.doppler_discount = doppler_cfg.get('doppler_discount', 0.7)
+        self.doppler_discount_thre = doppler_cfg.get('doppler_discount_thre', 0.7)
+        # Use KF-derived v_r for tracks (True for nuScenes with good velocity, False for VoD)
+        self.use_kf_vr = doppler_cfg.get('use_kf_vr', False)
+        # Optional RCS-aware association (radar-specific cue)
+        self.use_rcs_assoc = doppler_cfg.get('use_rcs_assoc', False)
+        self.rcs_gamma = float(np.clip(doppler_cfg.get('rcs_gamma', 0.05), 0.0, 1.0))
+        self.rcs_sigma = float(max(doppler_cfg.get('rcs_sigma', 6.0), 1e-6))
+        self.rcs_min_npts = int(doppler_cfg.get('rcs_min_npts', 3))
+        self.rcs_score_gate = float(doppler_cfg.get('rcs_score_gate', 0.0))  # min det score to use RCS
+        self.rcs_allowed_cls = set(doppler_cfg.get('rcs_allowed_cls', list(range(self.cls_num))))  # which classes use RCS
+
+    def _check_valid_vr(self, data_info, det_idx):
+        """Check if detection has valid v_r using class-specific magnitude threshold."""
+        if 'valid_vr_mask' not in data_info or len(data_info.get('valid_vr_mask', [])) <= det_idx:
+            return False
+        if not bool(data_info['valid_vr_mask'][det_idx]):
+            return False  # no radar points in box
+        if 'radial_vels' not in data_info or len(data_info['radial_vels']) <= det_idx:
+            return False
+        vr = float(data_info['radial_vels'][det_idx])
+        cls_id = int(data_info['np_dets'][det_idx][13])
+        thre = self.vr_class_thre.get(cls_id, 0.5)
+        return abs(vr) >= thre
+
     def reset(self) -> None:
         """
         Initialize Tracker for each new seq
@@ -201,7 +239,12 @@ class Tracker:
                 'nusc_box': data_info['box_dets'][det_idx],
                 'np_array': data_info['np_dets'][det_idx],
                 'has_velo': data_info['has_velo'],
-                'seq_id': data_info['seq_id']
+                'seq_id': data_info['seq_id'],
+                'radial_vel': data_info['radial_vels'][det_idx] if 'radial_vels' in data_info and len(data_info.get('radial_vels', [])) > det_idx else 0.0,
+                'has_valid_vr': self._check_valid_vr(data_info, det_idx),
+                'ego_translation': data_info.get('ego_translation', np.array([0.0, 0.0])),
+                'vr_n_pts': int(data_info['vr_n_pts'][det_idx]) if 'vr_n_pts' in data_info and len(data_info.get('vr_n_pts', [])) > det_idx else 0,
+                'radar_rcs': float(data_info['radar_rcs'][det_idx]) if 'radar_rcs' in data_info and len(data_info.get('radar_rcs', [])) > det_idx else 0.0,
             }
             if self.is_debug: assert tra_id not in self.dead_tras
             if tra_id in self.valid_tras:
@@ -345,10 +388,136 @@ class Tracker:
         # mask invalid value
         first_cost[np.where(~valid_3d_mask)] = -np.inf
 
+        # Convert similarity to distance cost
+        geo_cost = 1 - first_cost  # (cls_num, det_num, tra_num), lower=better
+
+        # DE-FastPoly Contribution D: Doppler-aware association cost
+        if self.use_doppler_assoc and 'radial_vels' in self.det_infos and len(self.det_infos['radial_vels']) > 0:
+            det_vr = self.det_infos['radial_vels']  # (det_num,)
+
+            # Get ego translation for ego-consistent v_r computation
+            ego_xy = self.det_infos.get('ego_translation', np.array([0.0, 0.0]))
+
+            # Get track v_r: compute from KF state using ego-relative direction
+            tra_vr = np.zeros(tra_num)
+            valid_tra = np.zeros(tra_num, dtype=bool)
+            for i, tra_id in enumerate(self.tra_infos['all_valid_ids']):
+                tra = self.valid_tras[tra_id]
+                if self.use_kf_vr:
+                    # Ego-consistent: v_r = projection of velocity onto (track_pos - ego_pos) direction
+                    st = tra.motion_management.state
+                    x, y = st[0, 0], st[1, 0]
+                    vx, vy = st[2, 0], st[3, 0]
+                    dx, dy = x - ego_xy[0], y - ego_xy[1]
+                    r_ego = np.sqrt(dx**2 + dy**2)
+                    if r_ego > 1e-6:
+                        tra_vr[i] = (dx * vx + dy * vy) / r_ego
+                        valid_tra[i] = True
+                else:
+                    # Use last measured v_r (for VoD where KF velocity is unreliable)
+                    if hasattr(tra, 'last_vr') and tra.last_vr is not None:
+                        tra_vr[i] = tra.last_vr
+                        valid_tra[i] = True
+                    else:
+                        st = tra.motion_management.state
+                        x, y = st[0, 0], st[1, 0]
+                        vx, vy = st[2, 0], st[3, 0]
+                        r = np.sqrt(x**2 + y**2)
+                        if r > 1e-6:
+                            tra_vr[i] = (x * vx + y * vy) / r
+
+            # Gaussian-normalized doppler cost in [0, 1] (compatible with geo_cost scale)
+            delta_vr = det_vr[:, None] - tra_vr[None, :]
+            doppler_score = np.exp(-0.5 * (delta_vr / self.doppler_sigma) ** 2)  # [0,1], 1=perfect match
+            doppler_cost = 1.0 - doppler_score  # [0,1], 0=perfect match
+
+            # Per-detection valid mask: class-specific v_r magnitude threshold
+            raw_mask = self.det_infos.get('valid_vr_mask', None)
+            valid_det = np.zeros(det_num, dtype=bool)
+            if raw_mask is not None:
+                for d_idx in range(det_num):
+                    valid_det[d_idx] = self._check_valid_vr(self.det_infos, d_idx)
+
+            # Pair-level valid mask: only blend doppler when BOTH det and tra have valid v_r
+            valid_pair = valid_det[:, None] & valid_tra[None, :]  # (det_num, tra_num)
+
+            # Start with geo_cost, selectively blend doppler for valid pairs only
+            final_cost = geo_cost.copy()
+            for d_idx in range(det_num):
+                if not valid_det[d_idx]:
+                    continue  # keep pure geo_cost for this detection
+                # Check if any track has valid v_r
+                if not np.any(valid_pair[d_idx, :]):
+                    continue
+                blended = geo_cost[:, d_idx, :].copy()
+                for t_idx in range(tra_num):
+                    if valid_pair[d_idx, t_idx]:
+                        blended[:, t_idx] = (self.assoc_alpha * geo_cost[:, d_idx, t_idx]
+                                             + self.assoc_beta * doppler_cost[d_idx, t_idx])
+                        # Contribution F: Doppler-aided adaptive threshold
+                        if self.use_doppler_discount:
+                            if doppler_score[d_idx, t_idx] > self.doppler_discount_thre:
+                                blended[:, t_idx] *= self.doppler_discount
+                    # else: keep pure geo_cost for this (det, tra) pair
+                final_cost[:, d_idx, :] = blended
+
+            # DE-FastPoly Contribution E: Doppler gating — reject pairs with large velocity mismatch
+            if self.use_doppler_gate:
+                gate_score_thre = np.exp(-0.5 * self.doppler_gate_thre ** 2)
+                gate_mask = (doppler_score < gate_score_thre) & valid_pair  # only gate valid pairs
+                final_cost[:, gate_mask] = np.inf
+        else:
+            final_cost = geo_cost
+
+        # DE-FastPoly: Optional RCS association term
+        if self.use_rcs_assoc and 'radar_rcs' in self.det_infos and len(self.det_infos['radar_rcs']) > 0 and self.rcs_gamma > 0:
+            det_rcs = np.array(self.det_infos['radar_rcs'], dtype=float)
+            det_npts = np.array(self.det_infos.get('vr_n_pts', np.zeros(det_num)), dtype=float)
+            # Score-gating: only trust RCS when detection confidence is high enough
+            det_scores = self.det_infos.get('np_dets', np.zeros((det_num, 13)))[:, 12] if 'np_dets' in self.det_infos else np.ones(det_num)
+            valid_det_rcs = np.isfinite(det_rcs) & (det_npts >= self.rcs_min_npts) & (det_scores >= self.rcs_score_gate)
+            # Per-class gating: only apply RCS for allowed classes
+            if self.rcs_allowed_cls and len(self.rcs_allowed_cls) < self.cls_num:
+                det_cls = self.det_infos.get('np_dets', np.zeros((det_num, 14)))[:, 13].astype(int) if 'np_dets' in self.det_infos else np.zeros(det_num, dtype=int)
+                for d_idx in range(det_num):
+                    if int(det_cls[d_idx]) not in self.rcs_allowed_cls:
+                        valid_det_rcs[d_idx] = False
+
+            tra_rcs = np.zeros(tra_num, dtype=float)
+            valid_tra_rcs = np.zeros(tra_num, dtype=bool)
+            for i, tra_id in enumerate(self.tra_infos['all_valid_ids']):
+                tra = self.valid_tras[tra_id]
+                tra_npts = int(getattr(tra, 'last_rcs_npts', 0))
+                if (
+                    hasattr(tra, 'last_rcs')
+                    and tra.last_rcs is not None
+                    and np.isfinite(float(tra.last_rcs))
+                    and tra_npts >= self.rcs_min_npts
+                ):
+                    tra_rcs[i] = float(tra.last_rcs)
+                    valid_tra_rcs[i] = True
+
+            valid_pair_rcs = valid_det_rcs[:, None] & valid_tra_rcs[None, :]
+            if np.any(valid_pair_rcs):
+                delta_rcs = det_rcs[:, None] - tra_rcs[None, :]
+                rcs_score = np.exp(-0.5 * (delta_rcs / self.rcs_sigma) ** 2)
+                rcs_cost = 1.0 - rcs_score
+                for d_idx in range(det_num):
+                    if not np.any(valid_pair_rcs[d_idx, :]):
+                        continue
+                    blended = final_cost[:, d_idx, :].copy()
+                    for t_idx in range(tra_num):
+                        if valid_pair_rcs[d_idx, t_idx]:
+                            blended[:, t_idx] = (
+                                (1.0 - self.rcs_gamma) * final_cost[:, d_idx, t_idx]
+                                + self.rcs_gamma * rcs_cost[d_idx, t_idx]
+                            )
+                    final_cost[:, d_idx, :] = blended
+
         # Due to the execution speed of python,
-        # construct the two-stage cost matrix under half-parallel framework is very tricky, 
+        # construct the two-stage cost matrix under half-parallel framework is very tricky,
         # we strongly recommend only use giou_bev as two-stage metric to build the cost matrix
-        return {'one_stage': 1 - first_cost, 'two_stage': 1 - two_cost if two_cost is not None else None}
+        return {'one_stage': final_cost, 'two_stage': 1 - two_cost if two_cost is not None else None}
 
     def matching_cost(self, cost_matrices: dict) -> np.array:
         """

@@ -878,11 +878,16 @@ class CV(ABC_MODEL):
         Measure vector: [x, y, (z, w, l, h, optional) (vx, vy, optional), ry]
     """
 
-    def __init__(self, has_velo: bool, has_geofilter: bool, dt: float) -> None:
+    def __init__(self, has_velo: bool, has_geofilter: bool, dt: float, has_doppler: bool = False, use_doppler_init: bool = False, doppler_init_rho: float = 1.0) -> None:
         super().__init__()
         self.has_velo, self.has_geofilter, self.dt = has_velo, has_geofilter, dt
+        self.has_doppler = has_doppler
+        self.use_doppler_init = use_doppler_init
+        self.doppler_init_rho = doppler_init_rho  # 1.0=override, <1.0=fusion with detector velocity
         self.MD = 9 if self.has_velo else 7
         self.MD = (self.MD - 4) if self.has_geofilter else self.MD
+        if self.has_doppler:
+            self.MD += 1  # extra dimension for radial velocity
 
         # measure vector dim
         self.SD = 6 if self.has_geofilter else 10
@@ -904,6 +909,27 @@ class CV(ABC_MODEL):
 
         # set yaw
         init_state[-1] = det_box.yaw
+
+        # DE-FastPoly Contribution C: Doppler velocity initialization
+        # Project v_r onto ego-relative direction (not global origin)
+        # rho=1.0: full override (VoD, no detector velocity)
+        # rho<1.0: fusion v = (1-rho)*v_det + rho*v_doppler (nuScenes, has detector velocity)
+        if self.use_doppler_init and det_infos.get('has_valid_vr', False):
+            ego_xy = det_infos.get('ego_translation', np.array([0.0, 0.0]))
+            x, y = init_state[0], init_state[1]
+            dx, dy = x - ego_xy[0], y - ego_xy[1]
+            r_ego = np.sqrt(dx**2 + dy**2)
+            if r_ego > 1e-6:
+                v_r = det_infos['radial_vel']
+                rho = self.doppler_init_rho
+                v_dopp_x = v_r * dx / r_ego
+                v_dopp_y = v_r * dy / r_ego
+                if self.has_geofilter:
+                    init_state[2] = (1 - rho) * init_state[2] + rho * v_dopp_x
+                    init_state[3] = (1 - rho) * init_state[3] + rho * v_dopp_y
+                else:
+                    init_state[6] = (1 - rho) * init_state[6] + rho * v_dopp_x
+                    init_state[7] = (1 - rho) * init_state[7] + rho * v_dopp_y
 
         # only for debug
         q = Quaternion(det[8:12].tolist())
@@ -927,14 +953,20 @@ class CV(ABC_MODEL):
         Q[-3, -3] *= 2
         return Q
 
-    def getMeaNoiseR(self, cls_label) -> np.mat:
+    def getMeaNoiseR(self, cls_label, doppler_noise=0.5) -> np.mat:
         """set measure noise(fix)
         """
         R = np.mat(np.eye(self.MD)) * FINETUNE_R[cls_label]
-        R[-1, -1] /= 2
+        if self.has_doppler:
+            # last dim is doppler, second-to-last is yaw
+            R[-2, -2] /= 2  # yaw noise (was R[-1,-1])
+            R[-1, -1] = doppler_noise ** 2  # doppler noise
+        else:
+            R[-1, -1] /= 2
         if self.has_velo:
-            R[-2, -2] *= 2
-            R[-3, -3] *= 2
+            idx_offset = 1 if self.has_doppler else 0
+            R[-2 - idx_offset, -2 - idx_offset] *= 2
+            R[-3 - idx_offset, -3 - idx_offset] *= 2
         return R
 
     def getTransitionF(self) -> np.mat:
@@ -961,8 +993,11 @@ class CV(ABC_MODEL):
                         [0, 0, 0, 0, 0, 1]])
         return F
 
-    def getMeaStateH(self) -> np.mat:
+    def getMeaStateH(self, state=None) -> np.mat:
         """obtain matrix in the motion_module/script/CV_kinect_jacobian.ipynb
+        When has_doppler=True and state is provided, adds a row for radial velocity:
+        v_r = (x*vx + y*vy) / r, which is linear in vx,vy.
+        H_doppler_row = [0, 0, x/r, y/r, 0, 0] (for geofilter state [x,y,vx,vy,vz,ry])
         """
         if self.has_velo:
             if not self.has_geofilter:
@@ -994,7 +1029,35 @@ class CV(ABC_MODEL):
                 H = np.mat([[1, 0, 0, 0, 0, 0],
                             [0, 1, 0, 0, 0, 0],
                             [0, 0, 0, 0, 0, 1]])
+
+        # Contribution A: append doppler observation row
+        if self.has_doppler and state is not None and self.has_geofilter:
+            x, y = state[0, 0], state[1, 0]
+            r = np.sqrt(x**2 + y**2)
+            r = max(r, 1e-6)  # avoid division by zero
+            # v_r = (x*vx + y*vy)/r → dv_r/dvx = x/r, dv_r/dvy = y/r
+            # State: [x, y, vx, vy, vz, ry] → doppler row maps to vx(idx2), vy(idx3)
+            doppler_row = np.mat([[0, 0, x / r, y / r, 0, 0]])
+            H = np.vstack([H, doppler_row])
+
         return H
+
+    def getMeasureInfo(self, det: dict = None) -> np.mat:
+        """Override to append radial_vel when has_doppler is True.
+        Measure vector: [x, y, ry, v_radial] (with geofilter + doppler)
+        """
+        if not self.has_doppler:
+            return super().getMeasureInfo(det)
+
+        if det is None: raise ValueError("detection cannot be None")
+        mea_attr = ('center', 'wlh', 'velocity', 'yaw') if self.has_velo else ('center', 'wlh', 'yaw')
+        list_det = concat_box_attr(det['nusc_box'], *mea_attr)
+        if self.has_velo: list_det.pop(8)
+        if self.has_geofilter: del list_det[2:6]
+        # append radial velocity
+        list_det.append(det.get('radial_vel', 0.0))
+        assert len(list_det) == self.MD, f"Expected MD={self.MD}, got {len(list_det)}"
+        return np.mat(list_det).T
 
     def getOutputInfo(self, state: np.mat) -> np.array:
         """convert state vector in the filter to the output format
@@ -1007,16 +1070,14 @@ class CV(ABC_MODEL):
             list_state = state.T.tolist()[0][:2] + [-1, -1, -1, -1] + state.T.tolist()[0][2:4] + rotation.tolist()
         return np.array(list_state)
 
-    @staticmethod
-    def warpResYawToPi(res: np.mat) -> np.mat:
+    def warpResYawToPi(self, res: np.mat) -> np.mat:
         """warp res yaw to [-pi, pi) in place
-        Args:
-            res (np.mat): [measure dim, 1]
-            res infos -> [x, y, z, w, l, h, (vx, vy, optional), ry]
-        Returns:
-            np.mat: [measure dim, 1], residual warped to [-pi, pi)
+        With doppler, yaw is second-to-last; without doppler, yaw is last.
         """
-        res[-1, 0] = warp_to_pi(res[-1, 0])
+        if self.has_doppler:
+            res[-2, 0] = warp_to_pi(res[-2, 0])
+        else:
+            res[-1, 0] = warp_to_pi(res[-1, 0])
         return res
 
     @staticmethod

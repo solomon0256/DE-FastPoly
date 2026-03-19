@@ -1,4 +1,4 @@
-"""
+﻿"""
 kalman filter for trajectory state(motion state) estimation
 Two implemented KF version (LKF, EKF)
 Three core functions for each model: state init, state predict and state update
@@ -11,7 +11,10 @@ import numpy as np
 from .nusc_object import FrameObject
 from .motion_model import CA, CTRA, BICYCLE, CV, CTRV
 from pre_processing import arraydet2box
+from utils.math import warp_to_pi
+from utils import doppler_diag
 import math
+
 
 class KalmanFilter:
     """kalman filter interface
@@ -124,9 +127,39 @@ class LinearKalmanFilter(KalmanFilter):
     def __init__(self, timestamp: int, config: dict, track_id: int, det_infos: dict) -> None:
         # init basic infos
         super(LinearKalmanFilter, self).__init__(timestamp, config, track_id, det_infos)
+        # DE-FastPoly: doppler config
+        doppler_cfg = config.get('doppler', {})
+        self.has_doppler = doppler_cfg.get('use_doppler_obs', False)
+        self.use_doppler_init = doppler_cfg.get('use_doppler_init', False)
+        self.doppler_init_rho = doppler_cfg.get('doppler_init_rho', 1.0)
+        self.use_range_adaptive = doppler_cfg.get('use_range_adaptive', False)
+        self.range_noise_k = doppler_cfg.get('range_noise_k', 0.001)
+        self.doppler_noise = doppler_cfg.get('doppler_noise', 0.5)
+        # Radar-Informed Adaptive Noise (quality-aware measurement covariance)
+        self.use_adaptive_noise = doppler_cfg.get('use_adaptive_noise', False)
+        self.adapt_range_ref = doppler_cfg.get('adapt_range_ref', 30.0)
+        self.adapt_npts_ref = doppler_cfg.get('adapt_npts_ref', 5.0)
+        self.adapt_k_range = doppler_cfg.get('adapt_k_range', 0.25)
+        self.adapt_k_score = doppler_cfg.get('adapt_k_score', 0.35)
+        self.adapt_k_vr = doppler_cfg.get('adapt_k_vr', 0.20)
+        self.adapt_k_npts = doppler_cfg.get('adapt_k_npts', 0.15)
+        self.adapt_min_scale = doppler_cfg.get('adapt_min_scale', 0.5)
+        self.adapt_max_scale = doppler_cfg.get('adapt_max_scale', 2.5)
+        self.adapt_pos_only = doppler_cfg.get('adapt_pos_only', False)  # only scale position R dims
+        # DE-FastPoly: A-min pseudo-observation config
+        self.use_doppler_pseudo = doppler_cfg.get('use_doppler_pseudo', False)
+        self.pseudo_sigma = doppler_cfg.get('pseudo_sigma', 20.0)
+        self.pseudo_vr_thre = doppler_cfg.get('pseudo_vr_thre', 2.0)
+        self.pseudo_allowed_cls = set(doppler_cfg.get('pseudo_allowed_cls', [1, 2]))
         # set motion model, default Constant Acceleration(CA) for LKF
-        self.model = globals()[self.model](self.has_velo, self.has_geofilter, self.dt) if self.model in ['CV', 'CA'] \
-                     else globals()['CA'](self.has_velo, self.has_geofilter, self.dt)
+        if self.model in ['CV', 'CA']:
+            model_cls = globals()[self.model]
+            if self.model == 'CV':
+                self.model = model_cls(self.has_velo, self.has_geofilter, self.dt, has_doppler=self.has_doppler, use_doppler_init=self.use_doppler_init, doppler_init_rho=self.doppler_init_rho)
+            else:
+                self.model = model_cls(self.has_velo, self.has_geofilter, self.dt)
+        else:
+            self.model = globals()['CA'](self.has_velo, self.has_geofilter, self.dt)
         # Transition and Observation Matrices are fixed in the LKF
         self.initialize(det_infos)
         
@@ -136,9 +169,10 @@ class LinearKalmanFilter(KalmanFilter):
         self.Q = self.model.getProcessNoiseQ(self.class_label)
         self.SD = self.model.getStateDim()
         self.P = self.model.getInitCovP(self.class_label)
-        
+
         # state to measurement transition
-        self.R = self.model.getMeaNoiseR(self.class_label)
+        self.R_base = self.model.getMeaNoiseR(self.class_label, self.doppler_noise)
+        self.R = self.R_base.copy()
         self.H = self.model.getMeaStateH()
 
         # get different data format tracklet's state
@@ -169,16 +203,126 @@ class LinearKalmanFilter(KalmanFilter):
     def update(self, timestamp: int, det: dict = None) -> None:
         # corner case, no det for updating
         if det is None: return
-        
+
+        # Check if this detection has valid radial velocity
+        has_valid_vr = det.get('has_valid_vr', False) if det else False
+        if self.has_doppler:
+            doppler_diag.record_a_update(int(self.class_label), bool(has_valid_vr))
+
+        # DE-FastPoly: recompute H dynamically for doppler observation (Contribution A)
+        if self.has_doppler:
+            self.H = self.model.getMeaStateH(self.state)
+            if not has_valid_vr:
+                # No valid v_r: drop the doppler row from H
+                self.H = self.H[:-1, :]
+
+        # DE-FastPoly: range-adaptive measurement noise (Contribution B)
+        # Additive scaling on position dims only: R_pos += k * rÂ²
+        if self.use_range_adaptive:
+            x, y = self.state[0, 0], self.state[1, 0]
+            r_sq = x**2 + y**2
+            self.R = self.R_base.copy()
+            self.R[0, 0] += self.range_noise_k * r_sq
+            self.R[1, 1] += self.range_noise_k * r_sq
+        else:
+            self.R = self.R_base
+
+        # Drop doppler dimension from R when v_r is invalid
+        if self.has_doppler and not has_valid_vr:
+            self.R = self.R[:-1, :-1]
+
+        # Radar-Informed Adaptive Noise:
+        # Good observation quality (high score, valid v_r, many radar points) -> lower R.
+        # Hard condition (far range) -> higher R.
+        if self.use_adaptive_noise:
+            score = 0.5
+            if det is not None:
+                if 'np_array' in det and len(det['np_array']) > 12:
+                    score = float(det['np_array'][12])
+                elif 'nusc_box' in det and hasattr(det['nusc_box'], 'score'):
+                    score = float(det['nusc_box'].score)
+            score = float(np.clip(score, 0.0, 1.0))
+
+            if det is not None and 'np_array' in det and len(det['np_array']) >= 2:
+                dx, dy = float(det['np_array'][0]), float(det['np_array'][1])
+            else:
+                dx, dy = float(self.state[0, 0]), float(self.state[1, 0])
+            r = np.hypot(dx, dy)
+            range_penalty = (r / max(self.adapt_range_ref, 1e-6)) ** 2
+
+            vr_quality = 1.0 if has_valid_vr else 0.0
+            n_pts = det.get('vr_n_pts', None) if det is not None else None
+            if n_pts is None:
+                npts_quality = 0.0
+            else:
+                npts_quality = 1.0 - np.exp(-float(max(n_pts, 0.0)) / max(self.adapt_npts_ref, 1e-6))
+
+            scale = (
+                1.0
+                + self.adapt_k_range * range_penalty
+                - self.adapt_k_score * score
+                - self.adapt_k_vr * vr_quality
+                - self.adapt_k_npts * npts_quality
+            )
+            scale = float(np.clip(scale, self.adapt_min_scale, self.adapt_max_scale))
+            # Position-only scaling: only scale position dims (first 2 rows/cols),
+            # leave velocity and yaw noise untouched.
+            # This prevents AN from disrupting well-calibrated velocity noise
+            # when the detector already provides velocity (e.g., CenterPoint).
+            if self.adapt_pos_only:
+                self.R[0, 0] *= scale
+                self.R[1, 1] *= scale
+            else:
+                self.R = self.R * scale
+
         # update state and errorcov
         meas_info = self.model.getMeasureInfo(det)
+        if self.has_doppler and not has_valid_vr:
+            meas_info = meas_info[:-1, :]  # drop v_r from measurement
         _res = meas_info - self.H * self.state
-        self.model.warpResYawToPi(_res)
+        # Warp yaw residual to [-pi, pi). When doppler row is dropped,
+        # yaw is last element; when present, yaw is second-to-last.
+        if self.has_doppler and has_valid_vr:
+            _res[-2, 0] = warp_to_pi(_res[-2, 0])
+        else:
+            _res[-1, 0] = warp_to_pi(_res[-1, 0])
         _S = self.H * self.P * self.H.T + self.R
+        if self.has_doppler and has_valid_vr:
+            doppler_diag.record_a_innovation(
+                int(self.class_label),
+                float(_res[-1, 0]),
+                float(_S[-1, -1]),
+            )
         _KF_GAIN = self.P * self.H.T * _S.I
-        
+
         self.state += _KF_GAIN * _res
         self.P = (np.mat(np.identity(self.SD)) - _KF_GAIN * self.H) * self.P
+
+        # DE-FastPoly A-min: 1D radial pseudo-observation update
+        # Done AFTER the normal KF update, as a separate weak constraint
+        if self.use_doppler_pseudo and det is not None:
+            _has_vr = det.get('has_valid_vr', False)
+            _vr = det.get('radial_vel', 0.0)
+            _cls = int(self.class_label)
+            if _has_vr and abs(_vr) > self.pseudo_vr_thre and _cls in self.pseudo_allowed_cls:
+                det_arr = det.get('np_array', None)
+                if det_arr is not None:
+                    _xd, _yd = float(det_arr[0]), float(det_arr[1])
+                    _rd = np.sqrt(_xd**2 + _yd**2)
+                    if _rd > 1e-6:
+                        _rx, _ry = _xd / _rd, _yd / _rd
+                        _Hd = np.mat(np.zeros((1, self.SD)))
+                        if self.model.has_geofilter:
+                            _Hd[0, 2], _Hd[0, 3] = _rx, _ry
+                        else:
+                            _Hd[0, 6], _Hd[0, 7] = _rx, _ry
+                        _Rd = np.mat([[self.pseudo_sigma ** 2]])
+                        _zd = np.mat([[_vr]])
+                        _resd = _zd - _Hd * self.state
+                        _Sd = _Hd * self.P * _Hd.T + _Rd
+                        _Kd = self.P * _Hd.T * _Sd.I
+                        self.state += _Kd * _resd
+                        self.P = (np.mat(np.eye(self.SD)) - _Kd * _Hd) * self.P
 
         # output updated state to the result file
         self.model.warpStateYawToPi(self.state)
@@ -189,11 +333,24 @@ class LinearKalmanFilter(KalmanFilter):
             'cov_mat': self.P[:2, :2],
         }
         self.addFrameObject(timestamp, tra_infos, 'update')
-        
-        
+
+
 class ExtendKalmanFilter(KalmanFilter):
     def __init__(self, timestamp: int, config: dict, track_id: int, det_infos: dict) -> None:
         super().__init__(timestamp, config, track_id, det_infos)
+        doppler_cfg = config.get('doppler', {})
+        self.has_doppler = doppler_cfg.get('use_doppler_obs', False)
+        # Radar-Informed Adaptive Noise for EKF classes
+        self.use_adaptive_noise = doppler_cfg.get('use_adaptive_noise', False)
+        self.adapt_range_ref = doppler_cfg.get('adapt_range_ref', 30.0)
+        self.adapt_npts_ref = doppler_cfg.get('adapt_npts_ref', 5.0)
+        self.adapt_k_range = doppler_cfg.get('adapt_k_range', 0.25)
+        self.adapt_k_score = doppler_cfg.get('adapt_k_score', 0.35)
+        self.adapt_k_vr = doppler_cfg.get('adapt_k_vr', 0.20)
+        self.adapt_k_npts = doppler_cfg.get('adapt_k_npts', 0.15)
+        self.adapt_min_scale = doppler_cfg.get('adapt_min_scale', 0.5)
+        self.adapt_max_scale = doppler_cfg.get('adapt_max_scale', 2.5)
+        self.adapt_pos_only = doppler_cfg.get('adapt_pos_only', False)
         # set motion model, default Constant Acceleration and Turn Rate(CTRA) for EKF
         self.model = globals()[self.model](self.has_velo, self.has_geofilter, self.dt) if self.model in ['CTRV', 'CTRA', 'BICYCLE'] \
                      else globals()['CTRA'](self.has_velo, self.has_geofilter, self.dt)
@@ -241,6 +398,8 @@ class ExtendKalmanFilter(KalmanFilter):
     def update(self, timestamp: int, det: dict = None) -> None:
         # corner case, no det for updating
         if det is None: return
+        if self.has_doppler:
+            doppler_diag.record_a_ekf_path(int(self.class_label))
         
         # get measure infos for updating, and project state into meausre space
         meas_info = self.model.getMeasureInfo(det)
@@ -252,9 +411,49 @@ class ExtendKalmanFilter(KalmanFilter):
         
         # get jacobian matrix H using the predict state
         self.H = self.model.getMeaStateH(self.state)
-        
+
+        # Radar-Informed Adaptive Noise on EKF R (same rule as LKF).
+        R_use = self.R
+        if self.use_adaptive_noise and det is not None:
+            score = 0.5
+            if 'np_array' in det and len(det['np_array']) > 12:
+                score = float(det['np_array'][12])
+            elif 'nusc_box' in det and hasattr(det['nusc_box'], 'score'):
+                score = float(det['nusc_box'].score)
+            score = float(np.clip(score, 0.0, 1.0))
+
+            if 'np_array' in det and len(det['np_array']) >= 2:
+                dx, dy = float(det['np_array'][0]), float(det['np_array'][1])
+            else:
+                dx, dy = float(self.state[0, 0]), float(self.state[1, 0])
+            r = np.hypot(dx, dy)
+            range_penalty = (r / max(self.adapt_range_ref, 1e-6)) ** 2
+
+            has_valid_vr = bool(det.get('has_valid_vr', False))
+            vr_quality = 1.0 if has_valid_vr else 0.0
+            n_pts = det.get('vr_n_pts', None)
+            if n_pts is None:
+                npts_quality = 0.0
+            else:
+                npts_quality = 1.0 - np.exp(-float(max(n_pts, 0.0)) / max(self.adapt_npts_ref, 1e-6))
+
+            scale = (
+                1.0
+                + self.adapt_k_range * range_penalty
+                - self.adapt_k_score * score
+                - self.adapt_k_vr * vr_quality
+                - self.adapt_k_npts * npts_quality
+            )
+            scale = float(np.clip(scale, self.adapt_min_scale, self.adapt_max_scale))
+            if self.adapt_pos_only:
+                R_use = self.R.copy()
+                R_use[0, 0] *= scale
+                R_use[1, 1] *= scale
+            else:
+                R_use = self.R * scale
+
         # obtain KF gain and update state and errorcov
-        _S = self.H * self.P * self.H.T + self.R
+        _S = self.H * self.P * self.H.T + R_use
         # try:
         #     # obtain the cholesky factor U (upper matrix)
         #     _U = scipy.linalg.cholesky(a=_S, 
