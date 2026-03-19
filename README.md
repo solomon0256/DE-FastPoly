@@ -1,183 +1,152 @@
-# DE-FastPoly: Doppler-Enhanced Fast Polyhedral 3D Multi-Object Tracking
+# DE-FastPoly
 
-This is the official code for the paper:
+Official implementation of "DE-FastPoly: Doppler-Enhanced 3D Multi-Object Tracking with 4D Radar"
 
-> **DE-FastPoly: Doppler-Enhanced 3D Multi-Object Tracking with 4D Radar**
+> [**DE-FastPoly: Doppler-Enhanced 3D Multi-Object Tracking with 4D Radar**](https://arxiv.org/abs/xxxx.xxxxx),
 > Yuhe Wen, Linh Kästner, Jens Lambrecht
 > *IEEE International Symposium on Industrial Electronics (ISIE), 2026*
 
-DE-FastPoly extends [Fast-Poly](https://github.com/lixiaoyu2000/FastPoly) (RAL 2024) with two Doppler-based enhancements for 4D radar tracking:
+## About
 
-- **Doppler Velocity Initialization (DVI)**: Projects measured radial velocity $v_r$ into Cartesian space to initialize Kalman filter velocity at track birth, replacing the zero-velocity assumption.
-- **Doppler-Aware Association (DA)**: Blends a Doppler similarity term into the geometric association cost, improving data association for objects with similar geometry but different velocities.
+4D radar provides per-point radial velocity (Doppler), but most 3D trackers just throw it away. We built on top of [Fast-Poly](https://github.com/lixiaoyu2000/FastPoly) and added two simple modules that make use of it:
 
-Both modules are **plug-and-play** with zero runtime overhead (8.1 ms/frame).
+- **Doppler Velocity Init (DVI)** — uses the measured radial velocity to kick-start the Kalman filter at track birth, instead of assuming zero velocity.
+- **Doppler-Aware Association (DA)** — mixes a Doppler similarity score into the association cost so that objects moving at different speeds don't get confused even when they overlap geometrically.
+
+No extra latency, no architecture change needed. Just plug in.
 
 ## Architecture
 
 ```
-Detection (3D boxes + radar v_r)
-        │
-        ├── DVI: v_r → (vx, vy) projection at track birth
-        │         ↓
-        │    Kalman Filter with better velocity init
-        │
-        └── DA: c_final = α · c_geo + β · c_doppler
-                  ↓
-             Hungarian / Greedy assignment
+  3D Detections + radar v_r
+          |
+          +---> DVI: project v_r to (vx, vy) at track birth
+          |             |
+          |        Kalman Filter (better init)
+          |
+          +---> DA: c = alpha * c_geo + beta * c_doppler
+                        |
+                   Hungarian matching
 ```
 
-## Main Results
+## Results
 
-### View-of-Delft (VoD) — Oracle Detection
+### VoD (oracle detection)
 
-| Config | MOTA | MOTP | IDS | FP | FN |
-|--------|------|------|-----|----|----|
-| Baseline (FastPoly) | 0.859 | 0.718 | 217 | 404 | 548 |
-| + DVI | 0.870 | 0.716 | 189 | 411 | 466 |
-| + DA | 0.871 | 0.717 | 175 | 402 | 502 |
-| **+ DVI + DA** | **0.893** | **0.717** | **165** | **385** | **454** |
+ Method       | MOTA  | IDS |
+--------------|-------|-----|
+ FastPoly     | 0.859 | 217 |
+ **DE-FastPoly** | **0.893** | **165** |
 
-**MOTA +3.9%, IDS -24.0%** vs. baseline.
+MOTA +3.9%, IDS -24%
 
-### View-of-Delft (VoD) — PointPillars Detector
+### VoD (PointPillars detector)
 
-| Config | MOTA | MOTP | IDS | FP | FN |
-|--------|------|------|-----|----|----|
-| Baseline | 0.282 | 0.443 | 167 | 1095 | 2953 |
-| **+ DVI + DA** | **0.299** | **0.449** | **154** | **1118** | **2760** |
+ Method       | MOTA  | IDS |
+--------------|-------|-----|
+ FastPoly     | 0.282 | 167 |
+ **DE-FastPoly** | **0.299** | **154** |
 
-**MOTA +6.0% relative, IDS -7.8%** vs. baseline.
-
-### nuScenes — CenterPoint Detector
-
-| Method | AMOTA | AMOTP | IDS |
-|--------|-------|-------|-----|
-| FastPoly (baseline) | 0.7367 | 0.5765 | 414 |
-| **DE-FastPoly (DA only)** | **0.7367** | **0.5742** | **379** |
-
-**IDS -8.5%** with AMOTA maintained. DVI is disabled on nuScenes because CenterPoint already provides velocity estimates.
-
-## Modified Files (vs. FastPoly)
-
-| File | Change |
-|------|--------|
-| `tracking/nusc_tracker.py` | Doppler-aware association cost blending (DA) |
-| `tracking/nusc_trajectory.py` | `last_vr` state storage and update |
-| `motion_module/motion_model.py` | Velocity initialization from $v_r$ (DVI) |
-| `motion_module/kalman_filter.py` | Doppler config, dynamic H matrix, range-adaptive R |
-| `config/vod_config.yaml` | VoD configuration with Doppler parameters |
-| `config/nusc_config.yaml` | nuScenes configuration |
-| `utils/doppler_diag.py` | Doppler diagnostics collector (optional) |
-
-## Key Parameters
-
-```yaml
-# in config/vod_config.yaml → doppler section
-assoc_alpha: 0.95        # weight for geometric cost
-assoc_beta: 0.05         # weight for Doppler cost
-doppler_sigma: 10.0      # Gaussian normalization sigma
-use_doppler_init: True   # DVI: enable velocity init from v_r
-use_doppler_assoc: True  # DA: enable Doppler association
-vr_class_thre:           # min |v_r| to trust (per class)
-  0: 1.0   # Car
-  1: 0.3   # Pedestrian
-  2: 0.5   # Cyclist
-```
+MOTA +6.0% (relative), IDS -7.8%
 
 ## Getting Started
 
-### 1. Environment Setup
+### 1. Environment
 
-```bash
+```
 conda env create -f environment.yaml
 conda activate fastpoly
 ```
 
-### 2. Data Preparation
+### 2. Data
 
-#### VoD Dataset
-Download the [View of Delft dataset](https://intelligent-vehicles.org/datasets/view-of-delft/) and set the environment variable:
-```bash
+We test on [View of Delft (VoD)](https://intelligent-vehicles.org/datasets/view-of-delft/) and [nuScenes](https://www.nuscenes.org/).
+
+For VoD, download the dataset and set:
+```
 export VOD_ROOT=/path/to/view_of_delft_PUBLIC
 export VOD_LABEL_DIR=/path/to/label_2
 ```
 
-#### nuScenes Dataset
-Follow the [Fast-Poly instructions](https://github.com/lixiaoyu2000/FastPoly#2-required-data) to prepare detector files, token tables, and evaluation database. Then precompute radar $v_r$:
-```bash
+For nuScenes, follow the data prep in [Fast-Poly](https://github.com/lixiaoyu2000/FastPoly#2-required-data) to get the detector output, token tables, and eval database. Then precompute radar velocities:
+```
 python precompute_nusc_radar_vr.py --dataroot /path/to/nuscenes --out_dir data/nusc_radar_vr
 ```
 
-### 3. Running
+### 3. Run
 
-#### VoD — Oracle (GT) Tracking
 ```bash
+# VoD with ground-truth boxes
 python run_vod.py
-```
 
-#### VoD — Detector (PointPillars) Tracking
-```bash
+# VoD with PointPillars detections
 python run_vod_det.py
-```
 
-#### nuScenes Tracking
-```bash
+# nuScenes (same entry point as Fast-Poly)
 python test.py
 ```
 
-### 4. Evaluation
+### 4. Eval
 
-#### VoD Evaluation
 ```bash
 python eval_vod.py results/vod/val_de_fastpoly.csv
 ```
 
-#### Ablation Studies
+### 5. Scripts
+
+Extra scripts under `scripts/` for ablation studies, visualization, etc.:
+
 ```bash
-python paper_ablation.py       # Oracle ablation (Table II)
-python det_ablation_vod.py     # Detector ablation (Table III)
+python scripts/reproduce_all.py      # reproduce all paper results (~88s)
+python scripts/paper_ablation.py     # oracle ablation (Table II in paper)
+python scripts/det_ablation_vod.py   # detector ablation (Table III)
+python scripts/vr_statistics.py      # v_r distribution plot (Fig. 2)
+python scripts/visualize_cases.py    # BEV qualitative cases (Fig. 3)
 ```
 
-#### Reproduce All Results
-```bash
-python reproduce_all.py        # ~88s, validates all configurations
-```
+## What we changed (vs Fast-Poly)
 
-### 5. Visualization
-```bash
-python vr_statistics.py        # v_r distribution analysis (Figure 2)
-python visualize_cases.py      # BEV qualitative visualization (Figure 3)
-```
+| File | What |
+|------|------|
+| `tracking/nusc_tracker.py` | DA cost blending |
+| `tracking/nusc_trajectory.py` | stores last measured v_r per track |
+| `motion_module/motion_model.py` | DVI — velocity init from v_r |
+| `motion_module/kalman_filter.py` | doppler-related KF config |
+| `config/vod_config.yaml` | VoD config (new) |
+
+## News
+
+- 2026-03-15: Paper submitted to ISIE 2026.
+- 2026-03-20: Code released.
+
+## Contact
+
+Feel free to reach out if you have questions or find bugs.
+
+Yuhe Wen — wenyuhe03@gmail.com
 
 ## Citation
 
-If you find this work useful, please cite:
-
-```bibtex
+```
 @inproceedings{wen2026defastpoly,
-  title={DE-FastPoly: Doppler-Enhanced 3D Multi-Object Tracking with 4D Radar},
-  author={Wen, Yuhe and K{\"a}stner, Linh and Lambrecht, Jens},
-  booktitle={IEEE International Symposium on Industrial Electronics (ISIE)},
-  year={2026}
+  title     = {DE-FastPoly: Doppler-Enhanced 3D Multi-Object Tracking with 4D Radar},
+  author    = {Wen, Yuhe and K{\"a}stner, Linh and Lambrecht, Jens},
+  booktitle = {IEEE International Symposium on Industrial Electronics (ISIE)},
+  year      = {2026}
 }
 ```
 
-Also cite the original Fast-Poly:
-```bibtex
+Also consider citing the original Fast-Poly, which this work builds on:
+```
 @article{li2024fast,
-  title={Fast-Poly: A Fast Polyhedral Algorithm For 3D Multi-Object Tracking},
-  author={Li, Xiaoyu and Liu, Dedong and Wu, Yitao and Wu, Xian and Zhao, Lijun and Gao, Jinghan},
-  journal={IEEE Robotics and Automation Letters},
-  year={2024},
-  publisher={IEEE}
+  title     = {Fast-Poly: A Fast Polyhedral Algorithm For 3D Multi-Object Tracking},
+  author    = {Li, Xiaoyu and Liu, Dedong and Wu, Yitao and Wu, Xian and Zhao, Lijun and Gao, Jinghan},
+  journal   = {IEEE Robotics and Automation Letters},
+  year      = {2024},
+  publisher = {IEEE}
 }
 ```
-
-## Acknowledgements
-
-This project is built upon [Fast-Poly](https://github.com/lixiaoyu2000/FastPoly) and [Poly-MOT](https://github.com/lixiaoyu2000/Poly-MOT). We thank the authors for their excellent work.
 
 ## License
 
-This project is released under the [MIT License](LICENSE).
+MIT
