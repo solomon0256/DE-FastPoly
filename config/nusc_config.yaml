@@ -68,5 +68,5 @@ output:
   NMS_metric: iou_bev   # iou_bev, iou_3d, giou_bev, giou_3d, d_eucl
 
 debug:
-  is_debug: true # Whether to debug the code
+  is_debug: false
 

@@ -1,0 +1,92 @@
+basic:
+  split: 'val'
+  has_velo: False          # radar does not output vx,vy directly
+  LiDAR_interval: 0.1     # VoD ~10 Hz (LiDAR-synced)
+  CLASS_NUM: 3             # 0:Car, 1:Pedestrian, 2:Cyclist
+  Multiprocessing: False
+
+preprocessing:
+  SF_thre: {0: 0.20, 1: 0.20, 2: 0.20}
+  NMS_type: blend_nms
+  NMS_thre: {0: 0.1, 1: 0.1, 2: 0.1}
+  SCALE: {0: 1.0, 1: 1.0, 2: 1.0}
+  NMS_metric: {0: 'iou_bev', 1: 'iou_bev', 2: 'iou_bev'}
+  voxel_mask: False
+  voxel_mask_size: 6
+
+association:
+  category_metrics: {0: 'iou_bev', 1: 'iou_bev', 2: 'iou_bev'}
+  second_metric: 'iou_bev'
+  two_stage: False
+  first_thre: {0: 1.0, 1: 1.0, 2: 1.0}
+  second_thre: {0: 1.0, 1: 1.0, 2: 1.0}
+  algorithm: 'Hungarian'
+  voxel_mask: False
+  voxel_mask_size: 6
+
+motion_model:
+  filter: {0: 'LinearKalmanFilter', 1: 'LinearKalmanFilter', 2: 'LinearKalmanFilter'}
+  model:  {0: 'CV', 1: 'CV', 2: 'CV'}
+
+geometry_model:
+  use: {0: True, 1: True, 2: True}
+  filter: {0: 'MedianModel', 1: 'MedianModel', 2: 'MedianModel'}
+  window_size: {0: 5, 1: 5, 2: 5}
+
+life_cycle:
+  basic:
+    max_age: {0: 2, 1: 2, 2: 2}          # VoD-tuned: short retention reduces ghost tracks
+    min_hit: {0: 3, 1: 3, 2: 3}
+    decay_rate: {0: 0.3, 1: 0.3, 2: 0.3}
+  score:
+    delete_thre: {0: 0.03, 1: 0.03, 2: 0.03}
+    score_decay: {0: 0.25, 1: 0.25, 2: 0.25}
+    predict_mode: 'Normal'
+    update_mode: 'Multi'
+    termination: average
+
+output:
+  punish_num: 1
+  post_nms: False
+  NMS_thre: 0.1
+  NMS_type: blend_nms
+  NMS_metric: iou_bev
+
+doppler:
+  use_doppler_obs: False         # A: KF v_r observation — hurts, disabled
+  use_doppler_assoc: True        # D: Doppler-aware association — best contribution
+  use_doppler_gate: False        # E: Doppler gating — no effect
+  use_doppler_init: True         # C: Velocity initialization from v_r
+  use_range_adaptive: False      # B: Range-adaptive R — no effect
+  assoc_alpha: 0.95
+  assoc_beta: 0.05
+  doppler_sigma: 10.0            # Gaussian normalization sigma (robust 1-20)
+  doppler_gate_thre: 3.0
+  range_noise_k: 0.00003
+  doppler_noise: 10.0
+  vr_class_thre: {0: 1.0, 1: 0.3, 2: 0.5}
+  use_doppler_discount: False    # F: Adaptive threshold — increases IDS
+  doppler_discount: 0.7
+  doppler_discount_thre: 0.7
+  # RCS-aware association (radar-specific cue)
+  use_rcs_assoc: True
+  rcs_gamma: 0.005               # blend weight (very small, sensitive)
+  rcs_sigma: 6.0                 # Gaussian sigma for |delta RCS|
+  rcs_min_npts: 1                # min radar points for valid RCS
+  rcs_score_gate: 0.3            # min det score to use RCS (noisy boxes → noisy RCS)
+  rcs_allowed_cls: [1]           # Ped only (Car RCS too noisy on detector)
+  # Score-only Adaptive Noise (R scaling by detection confidence)
+  use_adaptive_noise: True
+  adapt_pos_only: True              # CRITICAL: only scale R[0,0] and R[1,1]
+  adapt_k_range: 0.0             # disabled (score-only)
+  adapt_k_score: 0.7             # high score → lower R (trust detection)
+  adapt_k_vr: 0.0                # disabled (score-only)
+  adapt_k_npts: 0.0              # disabled (score-only)
+  adapt_min_scale: 0.3           # allow R down to 30% for high-score dets
+  adapt_max_scale: 2.5           # max R scale
+  # Disabled features (proven harmful or no effect)
+  use_doppler_pseudo: False
+  use_radar_lifecycle: False
+
+debug:
+  is_debug: false

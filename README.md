@@ -1,159 +1,170 @@
-# Fast-Poly
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/fast-poly-a-fast-polyhedral-framework-for-3d/3d-multi-object-tracking-on-nuscenes)](https://paperswithcode.com/sota/3d-multi-object-tracking-on-nuscenes?p=fast-poly-a-fast-polyhedral-framework-for-3d)
+# DE-FastPoly: Doppler-Enhanced Fast Polyhedral 3D Multi-Object Tracking
 
-This is the Official Repo For the RAL 2024 Accepted Paper "Fast-Poly: A Fast Polyhedral Framework For 3D Multi-Object Tracking"
+This is the official code for the paper:
 
-![comparison](docs/comparison.jpg)
+> **DE-FastPoly: Doppler-Enhanced 3D Multi-Object Tracking with 4D Radar**
+> Yuhe Wen, Linh Kästner, Jens Lambrecht
+> *IEEE International Symposium on Industrial Electronics (ISIE), 2026*
 
-> [**Fast-Poly: A Fast Polyhedral Framework For 3D Multi-Object Tracking**](https://arxiv.org/abs/2403.13443),  
-> Xiaoyu Li<sup>\*</sup>, Dedong Liu<sup>\*</sup>, Yitao Wu<sup>\*</sup>, Xian Wu<sup>\*</sup>, Jinghan Gao, Lijun Zhao         
-> *arXiv technical report ([arXiv 2403.13443](https://arxiv.org/abs/2403.13443))*,  
+DE-FastPoly extends [Fast-Poly](https://github.com/lixiaoyu2000/FastPoly) (RAL 2024) with two Doppler-based enhancements for 4D radar tracking:
 
-### [paper](https://arxiv.org/abs/2403.13443) | [youtube](https://www.youtube.com/watch?v=nFmeL_PjOyA&ab_channel=LIXIAOYU) | [bilibili](https://www.bilibili.com/video/BV1iz421Z7qj/?vd_source=b170cf0cb90cd4c536ec11f67c9f6522)
+- **Doppler Velocity Initialization (DVI)**: Projects measured radial velocity $v_r$ into Cartesian space to initialize Kalman filter velocity at track birth, replacing the zero-velocity assumption.
+- **Doppler-Aware Association (DA)**: Blends a Doppler similarity term into the geometric association cost, improving data association for objects with similar geometry but different velocities.
 
-## abstract
+Both modules are **plug-and-play** with zero runtime overhead (8.1 ms/frame).
 
-3D Multi-Object Tracking (MOT) captures stable and comprehensive motion states of surrounding obstacles, essential for robotic perception. 
-However, current 3D trackers face issues with accuracy and latency consistency. 
-In this paper, we propose Fast-Poly, a fast and effective filter-based method for 3D MOT.
-Building upon our previous work Poly-MOT, Fast-Poly addresses object rotational anisotropy in 3D space, enhances local computation densification, and leverages parallelization technique, improving inference speed and precision.
-Fast-Poly is extensively tested on two large-scale tracking benchmarks with Python implementation.
-On the nuScenes dataset, Fast-Poly achieves new state-of-the-art performance with 75.8\% AMOTA among all methods and can run at 34.2 FPS on a personal CPU.
-On the Waymo dataset, Fast-Poly exhibits competitive accuracy with 63.6\% MOTA and impressive inference speed (35.5 FPS).
+## Architecture
 
-
-## News
-
-- 2024-10-03. **The code of Fast-Poly is released :rocket:.**
-- 2024-09-27. Fast-Poly is accepted at IEEE RA-L 2024 with ICRA 2025 :smiley:.
-- 2024-09-19. Warm-up 🔥! We released [Rock-Track](https://arxiv.org/pdf/2409.11749), a 3D MOT method for multi-camera detectors based on our previous method [Poly-MOT](https://github.com/lixiaoyu2000/Poly-MOT). Welcome to follow.
-- 2024-07-30. We revise the [paper](https://arxiv.org/abs/2403.13443), mainly including adding an in-depth discussion of A-gIoU. Welcome to follow.
-- 2024-03-20. Warm-up :fire:! The official repo and [paper](https://arxiv.org/abs/2403.13443) of Fast-Poly have been released. Welcome to follow.
-- 2024-03-18. Our method ranks first among all methods on the nuScenes tracking benchmark :fire:.
-
-
-## TODO list
-
-- 2024-11-26. support Waymo dataset.
-- 2024-10-03. ~~merge multi-processing function,~~ and support Waymo dataset.
+```
+Detection (3D boxes + radar v_r)
+        │
+        ├── DVI: v_r → (vx, vy) projection at track birth
+        │         ↓
+        │    Kalman Filter with better velocity init
+        │
+        └── DA: c_final = α · c_geo + β · c_doppler
+                  ↓
+             Hungarian / Greedy assignment
+```
 
 ## Main Results
 
-### [nuScenes](https://www.nuscenes.org/tracking?externalData=all&mapData=all&modalities=Any)
+### View-of-Delft (VoD) — Oracle Detection
 
-#### 3D Multi-object tracking on nuScenes test set
+| Config | MOTA | MOTP | IDS | FP | FN |
+|--------|------|------|-----|----|----|
+| Baseline (FastPoly) | 0.859 | 0.718 | 217 | 404 | 548 |
+| + DVI | 0.870 | 0.716 | 189 | 411 | 466 |
+| + DA | 0.871 | 0.717 | 175 | 402 | 502 |
+| **+ DVI + DA** | **0.893** | **0.717** | **165** | **385** | **454** |
 
- Method       | Detector      | AMOTA    | MOTA     | FPS      |   
---------------|---------------|----------|----------|----------|
- Fast-Poly    | LargeKernel3D | 75.8     | 62.8     | 34.2     |
- Poly-MOT     | LargeKernel3D | 75.4     | 62.1     | 3        |         
- 
-#### 3D Multi-object tracking on nuScenes val set
+**MOTA +3.9%, IDS -24.0%** vs. baseline.
 
- Method        | Detector        | AMOTA    | MOTA     | FPS      |   
----------------|-----------------|----------|----------|----------|
- Fast-Poly     | Centerpoint     | 73.7     | 63.2     | 28.9     |  
- Poly-MOT      | Centerpoint     | 73.1     | 61.9     | 5.6      |  
- Fast-Poly     | LargeKernel3D   | 76.0     | 65.8     | 34.2     |  
- Poly-MOT      | LargeKernel3D   | 75.2     | 54.1     | 8.6      |
+### View-of-Delft (VoD) — PointPillars Detector
 
-### [Waymo](https://waymo.com/open/challenges/2020/3d-tracking/)
+| Config | MOTA | MOTP | IDS | FP | FN |
+|--------|------|------|-----|----|----|
+| Baseline | 0.282 | 0.443 | 167 | 1095 | 2953 |
+| **+ DVI + DA** | **0.299** | **0.449** | **154** | **1118** | **2760** |
 
-### 3D Multi-object tracking on Waymo test set
+**MOTA +6.0% relative, IDS -7.8%** vs. baseline.
 
- Method        | Detector        | MOTA     | FPS      |  
----------------|-----------------|----------|----------|
- Fast-Poly     | CasA            | 63.6     | 35.5     |  
- CasTrack      | CasA            | 62.6     | --       |
+### nuScenes — CenterPoint Detector
 
-### 3D Multi-object tracking on Waymo val set
+| Method | AMOTA | AMOTP | IDS |
+|--------|-------|-------|-----|
+| FastPoly (baseline) | 0.7367 | 0.5765 | 414 |
+| **DE-FastPoly (DA only)** | **0.7367** | **0.5742** | **379** |
 
- Method        | Detector        | MOTA     | FPS      |   
----------------|-----------------|----------|----------|
- Fast-Poly     | CasA            | 62.3     | 35.5     |  
- CasTrack      | CasA            | 61.3     | --       |
+**IDS -8.5%** with AMOTA maintained. DVI is disabled on nuScenes because CenterPoint already provides velocity estimates.
 
-## Use Fast-Poly on nuScenes
+## Modified Files (vs. FastPoly)
 
-### 1. Create and activate environment
+| File | Change |
+|------|--------|
+| `tracking/nusc_tracker.py` | Doppler-aware association cost blending (DA) |
+| `tracking/nusc_trajectory.py` | `last_vr` state storage and update |
+| `motion_module/motion_model.py` | Velocity initialization from $v_r$ (DVI) |
+| `motion_module/kalman_filter.py` | Doppler config, dynamic H matrix, range-adaptive R |
+| `config/vod_config.yaml` | VoD configuration with Doppler parameters |
+| `config/nusc_config.yaml` | nuScenes configuration |
+| `utils/doppler_diag.py` | Doppler diagnostics collector (optional) |
+
+## Key Parameters
+
+```yaml
+# in config/vod_config.yaml → doppler section
+assoc_alpha: 0.95        # weight for geometric cost
+assoc_beta: 0.05         # weight for Doppler cost
+doppler_sigma: 10.0      # Gaussian normalization sigma
+use_doppler_init: True   # DVI: enable velocity init from v_r
+use_doppler_assoc: True  # DA: enable Doppler association
+vr_class_thre:           # min |v_r| to trust (per class)
+  0: 1.0   # Car
+  1: 0.3   # Pedestrian
+  2: 0.5   # Cyclist
 ```
-   conda env create -f environment.yaml  
-   conda activate fastpoly
+
+## Getting Started
+
+### 1. Environment Setup
+
+```bash
+conda env create -f environment.yaml
+conda activate fastpoly
 ```
 
-### 2. Required Data
+### 2. Data Preparation
 
-#### Prepare necessary file for the Fast-Poly inference. [[Download](https://drive.google.com/drive/folders/1NVYs1CRqulES-Vr6oSoD3YxlkrszKuz8?usp=sharing)]
-
-Fast-Poly is built upon Poly-MOT and utilizes the same file for inference. For details on preparing the necessary files, please refer to the [Poly-MOT repository](https://github.com/lixiaoyu2000/Poly-MOT/tree/main). The required files include:
-- The ordered 3D detector,
-- The token table for initializing the tracker in each scene,
-- The database for evaluation.
-
-### 3. Running and Evaluation
-
-#### Config
-All hyperparameters are encapsulated in `config/nusc_config.yaml`, you can change the `yaml` file to customize your own tracker.
-**The accuracy with `CenterPoint` in the paper can be reproduced through the parameters above the current `nusc_config.yaml`.**
-
-We also provide the tracking result [evaluation file](https://drive.google.com/drive/folders/1NVYs1CRqulES-Vr6oSoD3YxlkrszKuz8) on nuScenes val set under the above configuration.
-
-
-#### Running
-After downloading and organizing the detection files, you can simply run:
+#### VoD Dataset
+Download the [View of Delft dataset](https://intelligent-vehicles.org/datasets/view-of-delft/) and set the environment variable:
+```bash
+export VOD_ROOT=/path/to/view_of_delft_PUBLIC
+export VOD_LABEL_DIR=/path/to/label_2
 ```
+
+#### nuScenes Dataset
+Follow the [Fast-Poly instructions](https://github.com/lixiaoyu2000/FastPoly#2-required-data) to prepare detector files, token tables, and evaluation database. Then precompute radar $v_r$:
+```bash
+python precompute_nusc_radar_vr.py --dataroot /path/to/nuscenes --out_dir data/nusc_radar_vr
+```
+
+### 3. Running
+
+#### VoD — Oracle (GT) Tracking
+```bash
+python run_vod.py
+```
+
+#### VoD — Detector (PointPillars) Tracking
+```bash
+python run_vod_det.py
+```
+
+#### nuScenes Tracking
+```bash
 python test.py
 ```
-The file path(detector path, token path, database path, etc.) within the file needs to be modified. 
-Besides, you can also specify the file path using the terminal command, as following:
-```
-python test.py --eval_path <eval path>
-```
 
-#### Evaluation
-Tracking evaluation will be performed automatically after tracking all scenarios.
+### 4. Evaluation
 
-
-### 4. Auto-finetune
-The TBD trackers are often constrained by the need to optimize hyperparameters. 
-To address this, we have developed a parameter linear search system. 
-This functionality can be enabled by modifying the `test.py` script as follows:
-
-```
-if __name__ == "__main__":
-    # single inference, load and save config
-    config = yaml.load(open(args.config_path, 'r'), Loader=yaml.Loader)
-
-    # run Poly-MOT
-    run_nusc_polymot(config, args.result_path, args.eval_path)
-
-    # multi inference, linear search parameters
-    # linear_search_parameters([1, 11], 1, 'voxel_mask_size')
+#### VoD Evaluation
+```bash
+python eval_vod.py results/vod/val_de_fastpoly.csv
 ```
 
-To activate the automatic parameter adjustment function, comment out the `run_nusc_polymot` call 
-and uncomment the `linear_search_parameters` line. 
-The example provided demonstrates a search for the optimal `voxel_mask_size`, 
-exploring the range from `1m to 11m` with a step size of `1m`.
+#### Ablation Studies
+```bash
+python paper_ablation.py       # Oracle ablation (Table II)
+python det_ablation_vod.py     # Detector ablation (Table III)
+```
 
+#### Reproduce All Results
+```bash
+python reproduce_all.py        # ~88s, validates all configurations
+```
 
-## Visualization
-Please refer to our previous method Pol[](https://github.com/lixiaoyu2000/Poly-MOT/tree/main?tab=readme-ov-file#visualization)y-MOT for detailed visualization information
-
-## Contact
-
-Any questions or suggestions about the paper/code are welcome :open_hands:! 
-Please feel free to submit PRs to us if you find any problems or develop better features :raised_hands:!
-
-Xiaoyu Li(李效宇) lixiaoyu12349@icloud.com.
-
-## License
-
-Fast-Poly is released under the MIT license.
+### 5. Visualization
+```bash
+python vr_statistics.py        # v_r distribution analysis (Figure 2)
+python visualize_cases.py      # BEV qualitative visualization (Figure 3)
+```
 
 ## Citation
-If you find this project useful in your research, please consider citing by :smile_cat::
+
+If you find this work useful, please cite:
+
+```bibtex
+@inproceedings{wen2026defastpoly,
+  title={DE-FastPoly: Doppler-Enhanced 3D Multi-Object Tracking with 4D Radar},
+  author={Wen, Yuhe and K{\"a}stner, Linh and Lambrecht, Jens},
+  booktitle={IEEE International Symposium on Industrial Electronics (ISIE)},
+  year={2026}
+}
 ```
+
+Also cite the original Fast-Poly:
+```bibtex
 @article{li2024fast,
   title={Fast-Poly: A Fast Polyhedral Algorithm For 3D Multi-Object Tracking},
   author={Li, Xiaoyu and Liu, Dedong and Wu, Yitao and Wu, Xian and Zhao, Lijun and Gao, Jinghan},
@@ -162,13 +173,11 @@ If you find this project useful in your research, please consider citing by :smi
   publisher={IEEE}
 }
 ```
-```
-@inproceedings{li2023poly,
-  title={Poly-mot: A polyhedral framework for 3d multi-object tracking},
-  author={Li, Xiaoyu and Xie, Tao and Liu, Dedong and Gao, Jinghan and Dai, Kun and Jiang, Zhiqiang and Zhao, Lijun and Wang, Ke},
-  booktitle={2023 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
-  pages={9391--9398},
-  year={2023},
-  organization={IEEE}
-}
-```
+
+## Acknowledgements
+
+This project is built upon [Fast-Poly](https://github.com/lixiaoyu2000/FastPoly) and [Poly-MOT](https://github.com/lixiaoyu2000/Poly-MOT). We thank the authors for their excellent work.
+
+## License
+
+This project is released under the [MIT License](LICENSE).
