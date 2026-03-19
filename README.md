@@ -125,27 +125,9 @@ Feel free to reach out if you have questions or find bugs.
 
 Yuhe Wen — wenyuhe03@gmail.com
 
-## Citation
+## Acknowledgements
 
-```
-@inproceedings{wen2026defastpoly,
-  title     = {DE-FastPoly: Doppler-Enhanced 3D Multi-Object Tracking with 4D Radar},
-  author    = {Wen, Yuhe and K{\"a}stner, Linh and Lambrecht, Jens},
-  booktitle = {IEEE International Symposium on Industrial Electronics (ISIE)},
-  year      = {2026}
-}
-```
-
-Also consider citing the original Fast-Poly, which this work builds on:
-```
-@article{li2024fast,
-  title     = {Fast-Poly: A Fast Polyhedral Algorithm For 3D Multi-Object Tracking},
-  author    = {Li, Xiaoyu and Liu, Dedong and Wu, Yitao and Wu, Xian and Zhao, Lijun and Gao, Jinghan},
-  journal   = {IEEE Robotics and Automation Letters},
-  year      = {2024},
-  publisher = {IEEE}
-}
-```
+Built on top of [Fast-Poly](https://github.com/lixiaoyu2000/FastPoly) (Li et al., RAL 2024). Thanks to the original authors.
 
 ## License
 
