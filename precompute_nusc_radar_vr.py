@@ -15,7 +15,7 @@ from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import RadarPointCloud
 from pyquaternion import Quaternion
 
-NUSC_PATH = 'E:/WSL/nuscenes'
+NUSC_PATH = os.environ.get('NUSCENES_ROOT', './data/nuscenes')
 DETECTION_PATH = 'data/detector/val/val_centerpoint_new.json'
 OUTPUT_PATH = 'data/nusc_radar_vr.json'
 
