@@ -22,7 +22,7 @@ from run_vod import read_radar_pointcloud, get_radar_stats_for_box, build_frame_
 from run_vod_det import parse_det_label, make_np_det_scored, DET_DIR
 from eval_vod import load_gt, evaluate, find_moving_track_ids
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config', 'vod_config.yaml')
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config', 'vod_config.yaml')
 CLASS_NAMES = {0: 'Car', 1: 'Pedestrian', 2: 'Cyclist'}
 
 # Same parameters as paper_ablation.py

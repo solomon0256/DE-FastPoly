@@ -27,7 +27,7 @@ from run_vod import (read_radar_pointcloud, get_doppler_for_box,
                      make_np_det, LABEL_DIR)
 from eval_vod import load_gt, evaluate, find_moving_track_ids
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config', 'vod_config.yaml')
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config', 'vod_config.yaml')
 CLASS_NAMES = {0: 'Car', 1: 'Pedestrian', 2: 'Cyclist'}
 
 # Final parameters (frozen, do not change)
