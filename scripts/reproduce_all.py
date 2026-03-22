@@ -30,7 +30,7 @@ from eval_vod import load_gt, evaluate, find_moving_track_ids
 # FROZEN PARAMETERS — DO NOT CHANGE
 # These are the final paper parameters. Any change invalidates results.
 # ============================================================
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config', 'vod_config.yaml')
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config', 'vod_config.yaml')
 ALPHA = 0.95
 BETA = 0.05
 SIGMA = 10.0

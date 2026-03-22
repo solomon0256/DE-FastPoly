@@ -118,7 +118,7 @@ def load_predictions(csv_path):
 
 
 def evaluate(gt_by_frame, pred_by_frame, frame_ids, dist_thre=None,
-             moving_only=False, moving_ids=None, matching='greedy'):
+             moving_only=False, moving_ids=None, matching='hungarian'):
     """Compute CLEAR MOT metrics (MOTA, MOTP, IDS, FP, FN).
 
     Args:

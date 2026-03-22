@@ -12,7 +12,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--process', type=int, default=1)
 # paths
 localtime = ''.join(time.asctime(time.localtime(time.time())).split(' '))
-parser.add_argument('--nusc_path', type=str, default='/data1/wyt_dataset1/nuscenes/')
+parser.add_argument('--nusc_path', type=str, default=os.environ.get('NUSCENES_ROOT', './data/nuscenes'))
 parser.add_argument('--config_path', type=str, default='config/nusc_config.yaml')
 parser.add_argument('--detection_path', type=str, default='data/detector/val/val_centerpoint_new.json')
 parser.add_argument('--first_token_path', type=str, default='data/utils/first_token_table/trainval/nusc_first_token.json')
