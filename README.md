@@ -7,14 +7,14 @@ Doppler-Enhanced 3D Multi-Object Tracking with 4D Radar, built on [Fast-Poly](ht
 
 ## About
 
-Most 3D MOT methods ignore the radial velocity (Doppler) that 4D radar gives you for free. We add four lightweight modules on top of Fast-Poly to fix that:
+4D radar outputs per-point radial velocity (Doppler), but most 3D trackers don't use it. This repo adds four modules to Fast-Poly that exploit Doppler and other radar cues:
 
-- **DVI** (Doppler Velocity Initialization) — project measured v_r onto (vx, vy) at track birth so the Kalman filter doesn't start from zero
-- **DA** (Doppler-Aware Association) — blend a Doppler similarity term into the geometric cost matrix: `c = alpha * c_geo + beta * c_doppler`
-- **SAN** (Score-only Adaptive Noise) — scale KF measurement noise R based on detection confidence, so high-score detections are trusted more
-- **RCSA** (RCS-Aware Association) — use radar cross section consistency as a soft cue for pedestrian association
+- **DVI** (Doppler Velocity Init): use measured v_r to initialize KF velocity at track birth instead of zero
+- **DA** (Doppler-Aware Association): mix Doppler similarity into association cost, `c = alpha * c_geo + beta * c_doppler`
+- **SAN** (Score-only Adaptive Noise): scale measurement noise R by detection confidence
+- **RCSA** (RCS-Aware Association): radar cross section consistency as soft cue (pedestrian only)
 
-Runtime overhead is basically zero (~8ms/frame, same as vanilla Fast-Poly).
+~8ms/frame, no overhead vs vanilla Fast-Poly.
 
 ## Architecture
 
@@ -61,7 +61,7 @@ conda env create -f environment.yaml
 conda activate fastpoly
 ```
 
-Or just `pip install -r requirements.txt`.
+or `pip install -r requirements.txt` if you don't use conda.
 
 ### 2. Data
 
@@ -119,4 +119,4 @@ Yuhe Wen — wenyuhe03@gmail.com
 
 ## Acknowledgements
 
-Built on [Fast-Poly](https://github.com/lixiaoyu2000/FastPoly) (Li et al., RAL 2024). Thanks to the original authors for the clean codebase.
+Based on [Fast-Poly](https://github.com/lixiaoyu2000/FastPoly) (Li et al., RAL 2024).
