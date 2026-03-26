@@ -2,7 +2,7 @@
 
 Doppler-Enhanced 3D Multi-Object Tracking with 4D Radar, built on [Fast-Poly](https://github.com/lixiaoyu2000/FastPoly).
 
-> Yuhe Wen, Linh Kästner, Jens Lambrecht
+> Yuhe Wen
 > *Submitted to IEEE International Symposium on Industrial Electronics (ISIE), 2026*
 
 ## About
