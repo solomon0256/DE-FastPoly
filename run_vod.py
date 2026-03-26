@@ -17,12 +17,6 @@ Usage:
   python run_vod.py --no-doppler       # run baseline (no doppler)
 """
 
-# [AGENT-SYNC-MARKER]
-# EN: Shared VoD runner for Codex/Claude collaboration; keep detector/GT radar stat extraction consistent.
-# 中文: 这是Codex/Claude共同维护的VoD运行脚本；请保持检测与GT的雷达统计提取一致。
-# Owner: Codex/Claude
-# Date: 2026-03-11
-
 import sys, csv, os, argparse
 import numpy as np
 from collections import defaultdict
@@ -143,9 +137,6 @@ def _box_point_mask(pc, x, y, z, w, l, h, ry, expand=1.0):
 
 
 def get_radar_stats_for_box(pc, x, y, z, w, l, h, ry, expand=1.0):
-    # [AGENT-SYNC-MARKER][RADAR_STATS]
-    # EN: Unified extraction API for v_r / n_pts / RCS to avoid script-level mismatch.
-    # 中文: 统一提取v_r / 点数 / RCS的接口，避免不同脚本口径不一致。
     """Return radar stats inside box: (v_r_comp mean, has_valid, n_pts, rcs mean)."""
     if len(pc) == 0:
         return 0.0, False, 0, 0.0

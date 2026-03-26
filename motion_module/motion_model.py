@@ -128,10 +128,7 @@ class ABC_MODEL(abc.ABC):
             assert list_det[-1] == det['nusc_box'].orientation.radians and det['nusc_box'].orientation.axis[-1] >= 0    
         except:
             assert list_det[-1] == det['nusc_box'].orientation.radians + math.pi or list_det[-1] == det['nusc_box'].orientation.radians - math.pi or list_det[-1] == det['nusc_box'].orientation.radians + math.pi*2 or list_det[-1] == det['nusc_box'].orientation.radians - math.pi*2
-        try:
-            assert len(list_det) == self.MD
-        except:
-            pdb.set_trace()
+        assert len(list_det) == self.MD
 
         return np.mat(list_det).T
 
@@ -822,10 +819,7 @@ class BICYCLE(ABC_MODEL):
         if det is None: raise "detection cannot be None"
 
         mea_attr = ('center', 'wlh', 'velocity', 'yaw') if self.has_velo else ('center', 'wlh', 'yaw')
-        try:
-            list_det = concat_box_attr(det['nusc_box'], *mea_attr)
-        except:
-            pdb.set_trace()
+        list_det = concat_box_attr(det['nusc_box'], *mea_attr)
 
         if self.has_velo: list_det.pop(8)
 

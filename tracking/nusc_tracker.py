@@ -584,7 +584,7 @@ class Tracker:
     def debug(self) -> None:
         """
         only for debug, check whether the trajectory status is repeated
-        TODO: delete at public version
+        Check whether the trajectory status is consistent.
         """
         assert len(self.tentative_tras.keys() & self.active_tras.keys()) == 0
         assert len(self.active_tras.keys() & self.dead_tras.keys()) == 0

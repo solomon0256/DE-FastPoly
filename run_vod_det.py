@@ -10,12 +10,6 @@ Usage:
   python run_vod_det.py --adaptive-noise   # enable Radar-Informed Adaptive Noise
 """
 
-# [AGENT-SYNC-MARKER]
-# EN: Detector-pipeline entry used by Codex/Claude; always report score threshold and config path in logs.
-# 中文: 这是Codex/Claude共同使用的检测器流水线入口；日志中必须明确score阈值和配置路径。
-# Owner: Codex/Claude
-# Date: 2026-03-11
-
 import sys, csv, os, argparse
 import numpy as np
 from collections import defaultdict
